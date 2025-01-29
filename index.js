@@ -5,6 +5,7 @@ const schedule = require('node-schedule');
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
+const express = require('express');
 
 // Create data directory if it doesn't exist
 const dataDir = path.join(__dirname, 'data');
@@ -12,8 +13,25 @@ if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir);
 }
 
-// Initialize bot with token
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+// Initialize bot with token and proper error handling
+const bot = new TelegramBot(process.env.BOT_TOKEN, {
+    polling: {
+        autoStart: true,
+        params: {
+            timeout: 10
+        }
+    }
+});
+
+// Handle polling errors
+bot.on('polling_error', (error) => {
+    console.error('Polling error:', error.code);
+    if (error.code === 'ETELEGRAM' && error.message.includes('terminated by other getUpdates request')) {
+        console.log('Another bot instance is running. This instance will stop polling.');
+        bot.stopPolling();
+        process.exit(1);
+    }
+});
 
 // Store user preferences
 let userPreferences = {};
@@ -454,4 +472,16 @@ bot.on('photo', async (msg) => {
     resetUserState(chatId); // Reset state after handling photo to prevent duplicate messages
 });
 
-console.log('Attendance Bot is running...');
+// Initialize Express app
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Health check endpoint
+app.get('/', (req, res) => {
+    res.send('Attendance Bot is running!');
+});
+
+// Start Express server
+app.listen(PORT, () => {
+    console.log(`Attendance Bot is running on port ${PORT}...`);
+});

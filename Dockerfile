@@ -4,7 +4,7 @@
 # 2. Tag: docker tag attendance-bot <registry-url>/attendance-bot:latest
 # 3. Push: docker push <registry-url>/attendance-bot:latest
 # 4. On server: docker pull <registry-url>/attendance-bot:latest
-FROM node:20-slim
+FROM --platform=linux/amd64 node:20-slim
 
 # Create app directory
 WORKDIR /usr/src/app
