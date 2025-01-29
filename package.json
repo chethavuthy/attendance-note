@@ -1,0 +1,31 @@
+{
+  "name": "attendance-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for tracking attendance with image uploads",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "prod": "pm2 start index.js --name attendance-bot",
+    "stop": "pm2 stop attendance-bot",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "attendance"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "moment": "^2.29.4",
+    "node-schedule": "^2.1.1",
+    "node-telegram-bot-api": "^0.64.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "pm2": "^5.3.0"
+  }
+}
