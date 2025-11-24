@@ -7,29 +7,56 @@ const path = require("path");
 const XLSX = require("xlsx");
 const express = require("express");
 
-// Initialize KV storage
+// Initialize storage (supports Vercel KV, Upstash Redis, or file system)
 const isVercel = process.env.VERCEL === "1";
-let kv;
-let useKV = false;
+let storage;
+let storageType = "filesystem"; // "kv", "upstash", or "filesystem"
 
-try {
-  kv = require("@vercel/kv").kv;
-  useKV = isVercel || !!process.env.KV_REST_API_URL;
-} catch (error) {
-  console.warn("Vercel KV not available, falling back to file system");
-  useKV = false;
+// Try Upstash Redis first (free tier available)
+if (
+  process.env.UPSTASH_REDIS_REST_URL &&
+  process.env.UPSTASH_REDIS_REST_TOKEN
+) {
+  try {
+    const { Redis } = require("@upstash/redis");
+    storage = new Redis({
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+    storageType = "upstash";
+    console.log("Using Upstash Redis for storage");
+  } catch (error) {
+    console.warn("Upstash Redis not available:", error.message);
+  }
+}
+
+// Try Vercel KV if Upstash not available
+if (storageType === "filesystem") {
+  try {
+    const kvClient = require("@vercel/kv").kv;
+    if (isVercel || process.env.KV_REST_API_URL) {
+      storage = kvClient;
+      storageType = "kv";
+      console.log("Using Vercel KV for storage");
+    }
+  } catch (error) {
+    console.warn("Vercel KV not available:", error.message);
+  }
 }
 
 // Data directory for local development (fallback)
 const dataDir = path.join(__dirname, "data");
-if (!useKV && !fs.existsSync(dataDir)) {
+if (storageType === "filesystem" && !fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir);
 }
 
-// KV Helper Functions
+// Unified Storage Helper Functions
 async function getPreferences() {
-  if (useKV) {
-    const data = await kv.get("preferences");
+  if (storageType === "upstash") {
+    const data = await storage.get("preferences");
+    return data || {};
+  } else if (storageType === "kv") {
+    const data = await storage.get("preferences");
     return data || {};
   } else {
     const preferencesPath = path.join(dataDir, "preferences.json");
@@ -41,8 +68,10 @@ async function getPreferences() {
 }
 
 async function savePreferences(preferences) {
-  if (useKV) {
-    await kv.set("preferences", preferences);
+  if (storageType === "upstash") {
+    await storage.set("preferences", preferences);
+  } else if (storageType === "kv") {
+    await storage.set("preferences", preferences);
   } else {
     const preferencesPath = path.join(dataDir, "preferences.json");
     fs.writeFileSync(preferencesPath, JSON.stringify(preferences, null, 2));
@@ -50,8 +79,11 @@ async function savePreferences(preferences) {
 }
 
 async function getUserStates() {
-  if (useKV) {
-    const data = await kv.get("user_states");
+  if (storageType === "upstash") {
+    const data = await storage.get("user_states");
+    return data || {};
+  } else if (storageType === "kv") {
+    const data = await storage.get("user_states");
     return data || {};
   } else {
     const userStatesPath = path.join(dataDir, "user_states.json");
@@ -63,8 +95,10 @@ async function getUserStates() {
 }
 
 async function saveUserStates(userStates) {
-  if (useKV) {
-    await kv.set("user_states", userStates);
+  if (storageType === "upstash") {
+    await storage.set("user_states", userStates);
+  } else if (storageType === "kv") {
+    await storage.set("user_states", userStates);
   } else {
     const userStatesPath = path.join(dataDir, "user_states.json");
     fs.writeFileSync(userStatesPath, JSON.stringify(userStates, null, 2));
@@ -72,8 +106,11 @@ async function saveUserStates(userStates) {
 }
 
 async function getAttendance(chatId) {
-  if (useKV) {
-    const data = await kv.get(`attendance:${chatId}`);
+  if (storageType === "upstash") {
+    const data = await storage.get(`attendance:${chatId}`);
+    return data || {};
+  } else if (storageType === "kv") {
+    const data = await storage.get(`attendance:${chatId}`);
     return data || {};
   } else {
     const attendancePath = path.join(dataDir, `${chatId}_attendance.json`);
@@ -85,8 +122,10 @@ async function getAttendance(chatId) {
 }
 
 async function saveAttendance(chatId, attendance) {
-  if (useKV) {
-    await kv.set(`attendance:${chatId}`, attendance);
+  if (storageType === "upstash") {
+    await storage.set(`attendance:${chatId}`, attendance);
+  } else if (storageType === "kv") {
+    await storage.set(`attendance:${chatId}`, attendance);
   } else {
     const attendancePath = path.join(dataDir, `${chatId}_attendance.json`);
     fs.writeFileSync(attendancePath, JSON.stringify(attendance, null, 2));
@@ -273,9 +312,10 @@ bot.on("callback_query", async (query) => {
         const ws = XLSX.utils.json_to_sheet(records);
         XLSX.utils.book_append_sheet(wb, ws, "Attendance");
 
-        const excelPath = useKV
-          ? path.join("/tmp", `${chatId}_attendance.xlsx`)
-          : path.join(dataDir, `${chatId}_attendance.xlsx`);
+        const excelPath =
+          storageType !== "filesystem"
+            ? path.join("/tmp", `${chatId}_attendance.xlsx`)
+            : path.join(dataDir, `${chatId}_attendance.xlsx`);
         XLSX.writeFile(wb, excelPath);
 
         await bot.sendDocument(chatId, excelPath, {
@@ -313,10 +353,12 @@ bot.on("callback_query", async (query) => {
           const alertTimestamp = alertTime.getTime();
 
           if (isVercel) {
-            // Store test alert in KV for cron to pick up
-            const testAlerts = (await kv?.get("test_alerts")) || {};
-            testAlerts[chatId] = alertTimestamp;
-            if (kv) await kv.set("test_alerts", testAlerts);
+            // Store test alert in storage for cron to pick up
+            if (storageType !== "filesystem") {
+              const testAlerts = (await storage.get("test_alerts")) || {};
+              testAlerts[chatId] = alertTimestamp;
+              await storage.set("test_alerts", testAlerts);
+            }
 
             await bot.sendMessage(
               chatId,
@@ -475,9 +517,10 @@ bot.onText(/📊 Monthly Report/, async (msg) => {
   const ws = XLSX.utils.json_to_sheet(records);
   XLSX.utils.book_append_sheet(wb, ws, "Attendance");
 
-  const excelPath = useKV
-    ? path.join("/tmp", `${chatId}_attendance.xlsx`)
-    : path.join(dataDir, `${chatId}_attendance.xlsx`);
+  const excelPath =
+    storageType !== "filesystem"
+      ? path.join("/tmp", `${chatId}_attendance.xlsx`)
+      : path.join(dataDir, `${chatId}_attendance.xlsx`);
   XLSX.writeFile(wb, excelPath);
 
   await bot.sendDocument(chatId, excelPath, {
@@ -499,11 +542,11 @@ bot.onText(/⏰ Test Alert/, async (msg) => {
     const alertTimestamp = alertTime.getTime();
 
     if (isVercel) {
-      if (kv) {
-        // Store test alert in KV for cron to pick up
-        const testAlerts = (await kv.get("test_alerts")) || {};
+      if (storageType !== "filesystem") {
+        // Store test alert in storage for cron to pick up
+        const testAlerts = (await storage.get("test_alerts")) || {};
         testAlerts[chatId] = alertTimestamp;
-        await kv.set("test_alerts", testAlerts);
+        await storage.set("test_alerts", testAlerts);
 
         await bot.sendMessage(
           chatId,
@@ -513,7 +556,7 @@ bot.onText(/⏰ Test Alert/, async (msg) => {
       } else {
         await bot.sendMessage(
           chatId,
-          "⚠️ KV storage not available. Please configure Vercel KV.",
+          "⚠️ Storage not available. Please configure Upstash Redis or Vercel KV.",
           getCommandKeyboard(),
         );
       }
@@ -704,8 +747,8 @@ if (isVercel) {
       const currentTime = now.valueOf();
 
       // Check for pending test alerts
-      if (kv) {
-        const testAlerts = (await kv.get("test_alerts")) || {};
+      if (storageType !== "filesystem") {
+        const testAlerts = (await storage.get("test_alerts")) || {};
         const updatedTestAlerts = { ...testAlerts };
 
         for (const [chatId, alertTimestamp] of Object.entries(testAlerts)) {
@@ -727,7 +770,7 @@ if (isVercel) {
           Object.keys(updatedTestAlerts).length !==
           Object.keys(testAlerts).length
         ) {
-          await kv.set("test_alerts", updatedTestAlerts);
+          await storage.set("test_alerts", updatedTestAlerts);
         }
       }
 

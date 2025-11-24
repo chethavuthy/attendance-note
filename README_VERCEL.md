@@ -11,13 +11,48 @@ vercel
 ```
 
 ### 2. Set Environment Variables
-In Vercel dashboard, add:
-- `BOT_TOKEN` - Your Telegram bot token
-- `CRON_SECRET` (optional) - Secret token for cron endpoint security
+In Vercel dashboard, go to:
+**Settings → Environment Variables**
 
-### 3. Create Vercel KV Database
+Add these variables:
+
+**Required:**
+- `BOT_TOKEN` - Your Telegram bot token
+
+**For Vercel KV (if using):**
+- `KV_REST_API_URL` - Your KV REST API URL
+- `KV_REST_API_TOKEN` - Your KV REST API Token
+- `KV_REST_API_READ_ONLY_TOKEN` (optional) - Read-only token
+- `KV_URL` (optional) - KV URL
+- `REDIS_URL` (optional) - Redis URL
+
+**For Upstash Redis (if using instead of KV):**
+- `UPSTASH_REDIS_REST_URL` - Your Upstash REST URL
+- `UPSTASH_REDIS_REST_TOKEN` - Your Upstash REST Token
+
+**Optional:**
+- `CRON_SECRET` - Secret token for cron endpoint security
+
+**Note:** If you have both KV and Upstash credentials, Upstash will be used first (it's free!).
+
+### 3. Set Up Storage (Choose One)
+
+#### Option A: Upstash Redis (FREE - Recommended)
+1. Go to https://upstash.com and sign up (free tier available)
+2. Create a new Redis database
+3. Copy the REST URL and Token
+4. In Vercel Dashboard → Settings → Environment Variables, add:
+   - `UPSTASH_REDIS_REST_URL` - Your Upstash REST URL
+   - `UPSTASH_REDIS_REST_TOKEN` - Your Upstash REST Token
+
+#### Option B: Vercel KV (Pro Plan Required)
 1. Go to Vercel Dashboard → Storage → Create Database → KV
 2. The KV credentials will be automatically available
+3. Note: Vercel KV requires a Pro plan ($20/month)
+
+#### Option C: File System (Local Development Only)
+- No setup needed, uses local files
+- Not recommended for production on Vercel
 
 ### 4. Set Up Webhook
 After deployment, set your Telegram webhook:
@@ -67,8 +102,20 @@ jobs:
 
 - **Webhook**: Telegram sends updates to `/api/webhook`
 - **Cron**: Runs every 30 minutes to check and send scheduled alerts
-- **KV Storage**: All data (preferences, attendance, states) stored in Vercel KV
-- **Test Alerts**: Stored in KV and picked up by cron job
+- **Storage**: All data (preferences, attendance, states) stored in:
+  - Upstash Redis (free tier) - Recommended
+  - Vercel KV (Pro plan) - Alternative
+  - File system (local dev only)
+- **Test Alerts**: Stored in storage and picked up by cron job
+
+## Storage Options Comparison
+
+| Feature | Upstash Redis | Vercel KV | File System |
+|---------|---------------|-----------|-------------|
+| **Free Tier** | ✅ Yes (10K commands/day) | ❌ No (Pro only) | ✅ Yes |
+| **Setup** | Easy (sign up, get credentials) | Easy (auto-configured) | None |
+| **Performance** | Fast | Fast | Slow (local only) |
+| **Recommended** | ✅ **Yes** | If you have Pro | Local dev only |
 
 ## Features Status
 
@@ -81,4 +128,3 @@ jobs:
 ✅ User preferences  
 
 All features work on Vercel!
-
