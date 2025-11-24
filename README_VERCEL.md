@@ -62,8 +62,17 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https:
 
 ### 5. Set Up Scheduled Alerts (Choose One)
 
-#### Option A: Vercel Cron Jobs (Pro Plan)
-If you have Vercel Pro, cron jobs are already configured in `vercel.json`. They run every 30 minutes automatically.
+#### Option A: Vercel Cron Jobs (Pro Plan Required)
+If you have Vercel Pro, add this to your `vercel.json`:
+```json
+"crons": [
+  {
+    "path": "/api/cron/alerts",
+    "schedule": "*/30 * * * *"
+  }
+]
+```
+**Note:** Free tier (Hobby) only supports daily cron jobs. For 30-minute intervals, use external cron services below.
 
 #### Option B: External Cron Service (Free Tier)
 For free tier, use an external cron service:
