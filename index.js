@@ -7,14 +7,93 @@ const path = require("path");
 const XLSX = require("xlsx");
 const express = require("express");
 
-// Create data directory if it doesn't exist
+// Initialize KV storage
+const isVercel = process.env.VERCEL === "1";
+let kv;
+let useKV = false;
+
+try {
+  kv = require("@vercel/kv").kv;
+  useKV = isVercel || !!process.env.KV_REST_API_URL;
+} catch (error) {
+  console.warn("Vercel KV not available, falling back to file system");
+  useKV = false;
+}
+
+// Data directory for local development (fallback)
 const dataDir = path.join(__dirname, "data");
-if (!fs.existsSync(dataDir)) {
+if (!useKV && !fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir);
 }
 
+// KV Helper Functions
+async function getPreferences() {
+  if (useKV) {
+    const data = await kv.get("preferences");
+    return data || {};
+  } else {
+    const preferencesPath = path.join(dataDir, "preferences.json");
+    if (fs.existsSync(preferencesPath)) {
+      return JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
+    }
+    return {};
+  }
+}
+
+async function savePreferences(preferences) {
+  if (useKV) {
+    await kv.set("preferences", preferences);
+  } else {
+    const preferencesPath = path.join(dataDir, "preferences.json");
+    fs.writeFileSync(preferencesPath, JSON.stringify(preferences, null, 2));
+  }
+}
+
+async function getUserStates() {
+  if (useKV) {
+    const data = await kv.get("user_states");
+    return data || {};
+  } else {
+    const userStatesPath = path.join(dataDir, "user_states.json");
+    if (fs.existsSync(userStatesPath)) {
+      return JSON.parse(fs.readFileSync(userStatesPath, "utf8"));
+    }
+    return {};
+  }
+}
+
+async function saveUserStates(userStates) {
+  if (useKV) {
+    await kv.set("user_states", userStates);
+  } else {
+    const userStatesPath = path.join(dataDir, "user_states.json");
+    fs.writeFileSync(userStatesPath, JSON.stringify(userStates, null, 2));
+  }
+}
+
+async function getAttendance(chatId) {
+  if (useKV) {
+    const data = await kv.get(`attendance:${chatId}`);
+    return data || {};
+  } else {
+    const attendancePath = path.join(dataDir, `${chatId}_attendance.json`);
+    if (fs.existsSync(attendancePath)) {
+      return JSON.parse(fs.readFileSync(attendancePath, "utf8"));
+    }
+    return {};
+  }
+}
+
+async function saveAttendance(chatId, attendance) {
+  if (useKV) {
+    await kv.set(`attendance:${chatId}`, attendance);
+  } else {
+    const attendancePath = path.join(dataDir, `${chatId}_attendance.json`);
+    fs.writeFileSync(attendancePath, JSON.stringify(attendance, null, 2));
+  }
+}
+
 // Initialize bot with token and proper error handling
-const isVercel = process.env.VERCEL === "1";
 const bot = new TelegramBot(process.env.BOT_TOKEN, {
   polling: !isVercel
     ? {
@@ -41,18 +120,17 @@ bot.on("polling_error", (error) => {
   }
 });
 
-// Store user preferences
+// Store user preferences (will be loaded async)
 let userPreferences = {};
+let preferencesLoaded = false;
 
-// Load existing preferences
-const preferencesPath = path.join(dataDir, "preferences.json");
-if (fs.existsSync(preferencesPath)) {
-  userPreferences = JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
-}
-
-// Save preferences
-function savePreferences() {
-  fs.writeFileSync(preferencesPath, JSON.stringify(userPreferences, null, 2));
+// Ensure preferences are loaded
+async function ensurePreferencesLoaded() {
+  if (!preferencesLoaded) {
+    userPreferences = await getPreferences();
+    preferencesLoaded = true;
+  }
+  return userPreferences;
 }
 
 // Get command keyboard
@@ -101,12 +179,7 @@ bot.on("callback_query", async (query) => {
 
     switch (query.data) {
       case "check_in":
-        const checkInPath = path.join(dataDir, `${chatId}_attendance.json`);
-        let checkInAttendance = {};
-
-        if (fs.existsSync(checkInPath)) {
-          checkInAttendance = JSON.parse(fs.readFileSync(checkInPath, "utf8"));
-        }
+        let checkInAttendance = await getAttendance(chatId);
 
         if (!checkInAttendance[date]) {
           checkInAttendance[date] = {};
@@ -118,10 +191,7 @@ bot.on("callback_query", async (query) => {
             checkInAttendance[date].pendingMessageId;
           delete checkInAttendance[date].pendingMessageId;
         }
-        fs.writeFileSync(
-          checkInPath,
-          JSON.stringify(checkInAttendance, null, 2),
-        );
+        await saveAttendance(chatId, checkInAttendance);
 
         await bot.sendMessage(
           chatId,
@@ -131,14 +201,7 @@ bot.on("callback_query", async (query) => {
         break;
 
       case "check_out":
-        const checkOutPath = path.join(dataDir, `${chatId}_attendance.json`);
-        let checkOutAttendance = {};
-
-        if (fs.existsSync(checkOutPath)) {
-          checkOutAttendance = JSON.parse(
-            fs.readFileSync(checkOutPath, "utf8"),
-          );
-        }
+        let checkOutAttendance = await getAttendance(chatId);
 
         if (!checkOutAttendance[date]) {
           checkOutAttendance[date] = {};
@@ -150,10 +213,7 @@ bot.on("callback_query", async (query) => {
             checkOutAttendance[date].pendingMessageId;
           delete checkOutAttendance[date].pendingMessageId;
         }
-        fs.writeFileSync(
-          checkOutPath,
-          JSON.stringify(checkOutAttendance, null, 2),
-        );
+        await saveAttendance(chatId, checkOutAttendance);
 
         await bot.sendMessage(
           chatId,
@@ -163,16 +223,12 @@ bot.on("callback_query", async (query) => {
         break;
 
       case "report":
-        const reportPath = path.join(dataDir, `${chatId}_attendance.json`);
+        const reportAttendance = await getAttendance(chatId);
 
-        if (!fs.existsSync(reportPath)) {
+        if (Object.keys(reportAttendance).length === 0) {
           await bot.sendMessage(chatId, "No attendance records found!");
           break;
         }
-
-        const reportAttendance = JSON.parse(
-          fs.readFileSync(reportPath, "utf8"),
-        );
         const currentMonth = moment().format("YYYY-MM");
 
         let report = `📊 Attendance Report for ${currentMonth}\n\n`;
@@ -217,19 +273,24 @@ bot.on("callback_query", async (query) => {
         const ws = XLSX.utils.json_to_sheet(records);
         XLSX.utils.book_append_sheet(wb, ws, "Attendance");
 
-        const excelPath = path.join(dataDir, `${chatId}_attendance.xlsx`);
+        const excelPath = useKV
+          ? path.join("/tmp", `${chatId}_attendance.xlsx`)
+          : path.join(dataDir, `${chatId}_attendance.xlsx`);
         XLSX.writeFile(wb, excelPath);
 
         await bot.sendDocument(chatId, excelPath, {
           caption: `📊 Excel Report for ${currentMonth}`,
         });
 
-        fs.unlinkSync(excelPath);
+        if (fs.existsSync(excelPath)) {
+          fs.unlinkSync(excelPath);
+        }
         break;
 
       case "alerts_on":
+        await ensurePreferencesLoaded();
         userPreferences[chatId] = { alertsEnabled: true };
-        savePreferences();
+        await savePreferences(userPreferences);
         await bot.sendMessage(
           chatId,
           "Alerts enabled! I'll remind you about check-in (8:30 AM) and check-out (5:30 PM).",
@@ -238,29 +299,45 @@ bot.on("callback_query", async (query) => {
         break;
 
       case "alerts_off":
+        await ensurePreferencesLoaded();
         userPreferences[chatId] = { alertsEnabled: false };
-        savePreferences();
+        await savePreferences(userPreferences);
         await bot.sendMessage(chatId, "Alerts disabled!", getCommandKeyboard());
         break;
 
       case "test_alert":
+        await ensurePreferencesLoaded();
         if (userPreferences[chatId]?.alertsEnabled) {
           const now = moment();
           const alertTime = now.add(2, "minutes").toDate();
+          const alertTimestamp = alertTime.getTime();
 
-          await bot.sendMessage(
-            chatId,
-            "⏰ Test alert scheduled for 2 minutes from now.",
-            getCommandKeyboard(),
-          );
+          if (isVercel) {
+            // Store test alert in KV for cron to pick up
+            const testAlerts = (await kv?.get("test_alerts")) || {};
+            testAlerts[chatId] = alertTimestamp;
+            if (kv) await kv.set("test_alerts", testAlerts);
 
-          schedule.scheduleJob(alertTime, () => {
-            bot.sendMessage(
+            await bot.sendMessage(
               chatId,
-              "🔔 This is your scheduled test alert!",
+              "⏰ Test alert scheduled for 2 minutes from now.",
               getCommandKeyboard(),
             );
-          });
+          } else {
+            await bot.sendMessage(
+              chatId,
+              "⏰ Test alert scheduled for 2 minutes from now.",
+              getCommandKeyboard(),
+            );
+
+            schedule.scheduleJob(alertTime, () => {
+              bot.sendMessage(
+                chatId,
+                "🔔 This is your scheduled test alert!",
+                getCommandKeyboard(),
+              );
+            });
+          }
         } else {
           await bot.sendMessage(
             chatId,
@@ -288,8 +365,9 @@ bot.on("callback_query", async (query) => {
 // Handle alerts on command
 bot.onText(/\/alerts_on/, async (msg) => {
   const chatId = msg.chat.id;
+  await ensurePreferencesLoaded();
   userPreferences[chatId] = { alertsEnabled: true };
-  savePreferences();
+  await savePreferences(userPreferences);
   await bot.sendMessage(
     chatId,
     "Alerts enabled! I'll remind you about check-in (8:30 AM) and check-out (5:30 PM).",
@@ -300,8 +378,9 @@ bot.onText(/\/alerts_on/, async (msg) => {
 // Handle text message for enabling alerts
 bot.onText(/🔔 Enable Alerts/, async (msg) => {
   const chatId = msg.chat.id;
+  await ensurePreferencesLoaded();
   userPreferences[chatId] = { alertsEnabled: true };
-  savePreferences();
+  await savePreferences(userPreferences);
   await bot.sendMessage(
     chatId,
     "Alerts enabled! I'll remind you about check-in (8:30 AM) and check-out (5:30 PM).",
@@ -312,32 +391,33 @@ bot.onText(/🔔 Enable Alerts/, async (msg) => {
 // Handle text message for disabling alerts
 bot.onText(/🔕 Disable Alerts/, async (msg) => {
   const chatId = msg.chat.id;
+  await ensurePreferencesLoaded();
   userPreferences[chatId] = { alertsEnabled: false };
-  savePreferences();
+  await savePreferences(userPreferences);
   await bot.sendMessage(chatId, "Alerts disabled!", getCommandKeyboard());
 });
 
-// Store user states
+// Store user states (will be loaded async)
 let userStates = {};
+let userStatesLoaded = false;
 
-// Load existing user states
-const userStatesPath = path.join(dataDir, "user_states.json");
-if (fs.existsSync(userStatesPath)) {
-  userStates = JSON.parse(fs.readFileSync(userStatesPath, "utf8"));
-}
-
-// Save user states
-function saveUserStates() {
-  fs.writeFileSync(userStatesPath, JSON.stringify(userStates, null, 2));
+// Ensure user states are loaded
+async function ensureUserStatesLoaded() {
+  if (!userStatesLoaded) {
+    userStates = await getUserStates();
+    userStatesLoaded = true;
+  }
+  return userStates;
 }
 
 // Reset user state
-function resetUserState(chatId) {
+async function resetUserState(chatId) {
+  await ensureUserStatesLoaded();
   userStates[chatId] = {
     action: null,
     timestamp: null,
   };
-  saveUserStates();
+  await saveUserStates(userStates);
 }
 
 // Handle monthly report button
@@ -345,14 +425,12 @@ bot.onText(/📊 Monthly Report/, async (msg) => {
   const chatId = msg.chat.id;
   console.log("Monthly report button clicked", msg);
 
-  const reportPath = path.join(dataDir, `${chatId}_attendance.json`);
+  const reportAttendance = await getAttendance(chatId);
 
-  if (!fs.existsSync(reportPath)) {
+  if (Object.keys(reportAttendance).length === 0) {
     await bot.sendMessage(chatId, "No attendance records found!");
     return;
   }
-
-  const reportAttendance = JSON.parse(fs.readFileSync(reportPath, "utf8"));
   const currentMonth = moment().format("YYYY-MM");
 
   let report = `📊 Attendance Report for ${currentMonth}\n\n`;
@@ -397,36 +475,63 @@ bot.onText(/📊 Monthly Report/, async (msg) => {
   const ws = XLSX.utils.json_to_sheet(records);
   XLSX.utils.book_append_sheet(wb, ws, "Attendance");
 
-  const excelPath = path.join(dataDir, `${chatId}_attendance.xlsx`);
+  const excelPath = useKV
+    ? path.join("/tmp", `${chatId}_attendance.xlsx`)
+    : path.join(dataDir, `${chatId}_attendance.xlsx`);
   XLSX.writeFile(wb, excelPath);
 
   await bot.sendDocument(chatId, excelPath, {
     caption: `📊 Excel Report for ${currentMonth}`,
   });
 
-  fs.unlinkSync(excelPath);
+  if (fs.existsSync(excelPath)) {
+    fs.unlinkSync(excelPath);
+  }
 });
 
 // Handle test alert button
 bot.onText(/⏰ Test Alert/, async (msg) => {
   const chatId = msg.chat.id;
+  await ensurePreferencesLoaded();
   if (userPreferences[chatId]?.alertsEnabled) {
     const now = moment();
     const alertTime = now.add(2, "minutes").toDate();
+    const alertTimestamp = alertTime.getTime();
 
-    await bot.sendMessage(
-      chatId,
-      "⏰ Test alert scheduled for 2 minutes from now.",
-      getCommandKeyboard(),
-    );
+    if (isVercel) {
+      if (kv) {
+        // Store test alert in KV for cron to pick up
+        const testAlerts = (await kv.get("test_alerts")) || {};
+        testAlerts[chatId] = alertTimestamp;
+        await kv.set("test_alerts", testAlerts);
 
-    schedule.scheduleJob(alertTime, () => {
-      bot.sendMessage(
+        await bot.sendMessage(
+          chatId,
+          "⏰ Test alert scheduled for 2 minutes from now.",
+          getCommandKeyboard(),
+        );
+      } else {
+        await bot.sendMessage(
+          chatId,
+          "⚠️ KV storage not available. Please configure Vercel KV.",
+          getCommandKeyboard(),
+        );
+      }
+    } else {
+      await bot.sendMessage(
         chatId,
-        "🔔 This is your scheduled test alert!",
+        "⏰ Test alert scheduled for 2 minutes from now.",
         getCommandKeyboard(),
       );
-    });
+
+      schedule.scheduleJob(alertTime, () => {
+        bot.sendMessage(
+          chatId,
+          "🔔 This is your scheduled test alert!",
+          getCommandKeyboard(),
+        );
+      });
+    }
   } else {
     await bot.sendMessage(
       chatId,
@@ -444,27 +549,21 @@ bot.onText(/✅ Check In/, async (msg) => {
   const time = timestamp.format("HH:mm:ss");
 
   // Set user state for check-in
+  await ensureUserStatesLoaded();
   userStates[chatId] = {
     action: "check_in",
     timestamp: timestamp.valueOf(),
   };
-  saveUserStates();
+  await saveUserStates(userStates);
 
-  const checkInPath = path.join(dataDir, `${chatId}_attendance.json`);
-  let checkInAttendance = {};
-
-  if (fs.existsSync(checkInPath)) {
-    checkInAttendance = JSON.parse(fs.readFileSync(checkInPath, "utf8"));
-  }
+  let checkInAttendance = await getAttendance(chatId);
 
   if (!checkInAttendance[date]) {
     checkInAttendance[date] = {};
   }
 
   checkInAttendance[date].checkIn = time;
-  fs.writeFileSync(checkInPath, JSON.stringify(checkInAttendance, null, 2));
-  hasCheckedIn = true;
-  hasCheckedOut = false;
+  await saveAttendance(chatId, checkInAttendance);
 
   await bot.sendMessage(
     chatId,
@@ -481,27 +580,21 @@ bot.onText(/🚪 Check Out/, async (msg) => {
   const time = timestamp.format("HH:mm:ss");
 
   // Set user state for check-out
+  await ensureUserStatesLoaded();
   userStates[chatId] = {
     action: "check_out",
     timestamp: timestamp.valueOf(),
   };
-  saveUserStates();
+  await saveUserStates(userStates);
 
-  const checkOutPath = path.join(dataDir, `${chatId}_attendance.json`);
-  let checkOutAttendance = {};
-
-  if (fs.existsSync(checkOutPath)) {
-    checkOutAttendance = JSON.parse(fs.readFileSync(checkOutPath, "utf8"));
-  }
+  let checkOutAttendance = await getAttendance(chatId);
 
   if (!checkOutAttendance[date]) {
     checkOutAttendance[date] = {};
   }
 
   checkOutAttendance[date].checkOut = time;
-  fs.writeFileSync(checkOutPath, JSON.stringify(checkOutAttendance, null, 2));
-  hasCheckedOut = true;
-  hasCheckedIn = false;
+  await saveAttendance(chatId, checkOutAttendance);
 
   await bot.sendMessage(
     chatId,
@@ -513,9 +606,9 @@ bot.onText(/🚪 Check Out/, async (msg) => {
 // Reset user state for other commands
 bot.onText(
   /📊 Monthly Report|🔔 Enable Alerts|🔕 Disable Alerts|⏰ Test Alert/,
-  (msg) => {
+  async (msg) => {
     const chatId = msg.chat.id;
-    resetUserState(chatId);
+    await resetUserState(chatId);
   },
 );
 
@@ -527,17 +620,13 @@ bot.on("photo", async (msg) => {
   const timestamp = moment();
   const date = timestamp.format("YYYY-MM-DD");
 
-  const attendancePath = path.join(dataDir, `${chatId}_attendance.json`);
-  let attendance = {};
-
-  if (fs.existsSync(attendancePath)) {
-    attendance = JSON.parse(fs.readFileSync(attendancePath, "utf8"));
-  }
+  let attendance = await getAttendance(chatId);
 
   if (!attendance[date]) {
     attendance[date] = {};
   }
 
+  await ensureUserStatesLoaded();
   const userState = userStates[chatId] || { action: null };
 
   if (userState.action === "check_in") {
@@ -547,7 +636,7 @@ bot.on("photo", async (msg) => {
       "📸 Photo received and attached to your check-in record!",
       getCommandKeyboard(),
     );
-    resetUserState(chatId);
+    await resetUserState(chatId);
   } else if (userState.action === "check_out") {
     attendance[date].checkOutMessageId = msg.message_id;
     await bot.sendMessage(
@@ -555,7 +644,7 @@ bot.on("photo", async (msg) => {
       "📸 Photo received and attached to your check-out record!",
       getCommandKeyboard(),
     );
-    resetUserState(chatId);
+    await resetUserState(chatId);
   } else {
     // If no check-in/out record exists, show the options
     const options = {
@@ -577,8 +666,8 @@ bot.on("photo", async (msg) => {
     );
   }
 
-  fs.writeFileSync(attendancePath, JSON.stringify(attendance, null, 2));
-  resetUserState(chatId); // Reset state after handling photo to prevent duplicate messages
+  await saveAttendance(chatId, attendance);
+  await resetUserState(chatId); // Reset state after handling photo to prevent duplicate messages
 });
 
 // Initialize Express app
@@ -596,6 +685,105 @@ if (isVercel) {
   app.post("/api/webhook", (req, res) => {
     bot.processUpdate(req.body);
     res.sendStatus(200);
+  });
+
+  // Cron endpoint for scheduled alerts
+  // Can be called by Vercel Cron Jobs (Pro) or external cron services (Free tier)
+  app.get("/api/cron/alerts", async (req, res) => {
+    try {
+      // Optional: Add authentication token check for security
+      const authToken = process.env.CRON_SECRET;
+      if (authToken && req.query.secret !== authToken) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const preferences = await getPreferences();
+      const now = moment();
+      const currentHour = now.hour();
+      const currentMinute = now.minute();
+      const currentTime = now.valueOf();
+
+      // Check for pending test alerts
+      if (kv) {
+        const testAlerts = (await kv.get("test_alerts")) || {};
+        const updatedTestAlerts = { ...testAlerts };
+
+        for (const [chatId, alertTimestamp] of Object.entries(testAlerts)) {
+          if (currentTime >= alertTimestamp) {
+            try {
+              await bot.sendMessage(
+                chatId,
+                "🔔 This is your scheduled test alert!",
+                getCommandKeyboard(),
+              );
+              delete updatedTestAlerts[chatId];
+            } catch (error) {
+              console.error(`Error sending test alert to ${chatId}:`, error);
+            }
+          }
+        }
+
+        if (
+          Object.keys(updatedTestAlerts).length !==
+          Object.keys(testAlerts).length
+        ) {
+          await kv.set("test_alerts", updatedTestAlerts);
+        }
+      }
+
+      // Check all users with alerts enabled
+      for (const [chatId, prefs] of Object.entries(preferences)) {
+        if (!prefs.alertsEnabled) continue;
+
+        const checkInTime = prefs.alertTimes?.checkIn || {
+          hour: 8,
+          minute: 25,
+        };
+        const checkOutTime = prefs.alertTimes?.checkOut || {
+          hour: 17,
+          minute: 30,
+        };
+
+        // Check if it's time for check-in alert (within 5 minute window)
+        if (
+          currentHour === checkInTime.hour &&
+          currentMinute >= checkInTime.minute &&
+          currentMinute < checkInTime.minute + 5
+        ) {
+          try {
+            await bot.sendMessage(
+              chatId,
+              "🔔 Time to check in!",
+              getCommandKeyboard(),
+            );
+          } catch (error) {
+            console.error(`Error sending check-in alert to ${chatId}:`, error);
+          }
+        }
+
+        // Check if it's time for check-out alert (within 5 minute window)
+        if (
+          currentHour === checkOutTime.hour &&
+          currentMinute >= checkOutTime.minute &&
+          currentMinute < checkOutTime.minute + 5
+        ) {
+          try {
+            await bot.sendMessage(
+              chatId,
+              "🔔 Time to check out!",
+              getCommandKeyboard(),
+            );
+          } catch (error) {
+            console.error(`Error sending check-out alert to ${chatId}:`, error);
+          }
+        }
+      }
+
+      res.status(200).json({ success: true, timestamp: now.toISOString() });
+    } catch (error) {
+      console.error("Error in cron job:", error);
+      res.status(500).json({ error: error.message });
+    }
   });
 }
 
